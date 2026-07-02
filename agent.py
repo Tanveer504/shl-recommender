@@ -71,20 +71,23 @@ def _build_prompt(messages: list[dict], candidates: list[dict]) -> str:
         levels = ", ".join(item["job_levels"][:4]) if item["job_levels"] else "All levels"
         langs  = ", ".join(item["languages"][:3]) if item["languages"] else "N/A"
         catalog_block += (
-            f"[ID: {item['entity_id']}] {item['name']}\n"
-            f"  Type: {item['test_type']} | Remote: {item['remote']} | "
-            f"Adaptive: {item['adaptive']} | Duration: {item['duration'] or 'N/A'}\n"
-            f"  Levels: {levels} | Languages: {langs}\n"
-            f"  Description: {item['description'][:220]}\n"
-            f"  URL: {item['url']}\n\n"
+            f"ENTITY_ID={item['entity_id']} | NAME={item['name']}\n"
+            f"  Type={item['test_type']} | Remote={item['remote']} | "
+            f"Duration={item['duration'] or 'N/A'} | Levels={levels}\n"
+            f"  Desc={item['description'][:200]}\n"
+            f"  URL={item['url']}\n\n"
         )
 
-    return (
-        f"CATALOG CANDIDATES (ONLY pick entity_ids from this list):\n{catalog_block}\n"
-        f"CONVERSATION HISTORY:\n{history}\n\n"
-        f"Respond with JSON now."
-    )
+    entity_ids_list = [item["entity_id"] for item in candidates]
 
+    return (
+        f"VALID ENTITY_IDs YOU MAY USE IN selected_ids: {entity_ids_list}\n\n"
+        f"CATALOG CANDIDATES DETAIL:\n{catalog_block}\n"
+        f"CONVERSATION HISTORY:\n{history}\n\n"
+        f"INSTRUCTIONS: Pick entity_ids ONLY from the list above. "
+        f"For a recommend/refine action, selected_ids must NOT be empty. "
+        f"Respond with JSON only."
+    )
 def get_agent_response(messages) -> dict:
     user_msgs = [m.content for m in messages if m.role == "user"]
     query = " ".join(user_msgs[-3:])
@@ -129,6 +132,7 @@ def get_agent_response(messages) -> dict:
 
     try:
         result = json.loads(raw)
+        logger.info(f"LLM action={result.get('action')} selected_ids={result.get('selected_ids', [])}")
     except json.JSONDecodeError:
         logger.warning(f"JSON parse failed: {raw[:300]}")
         return {
