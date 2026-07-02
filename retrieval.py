@@ -31,15 +31,22 @@ def retrieve_assessments(query: str, top_k: int = 20, catalog=None) -> list[dict
     q_emb = _model.encode([query], normalize_embeddings=True).astype("float32")
     scores, indices = _index.search(q_emb, min(top_k * 3, len(_catalog)))
 
+    query_words = {w for w in query.lower().split() if len(w) > 3}
+
     results = []
     for score, idx in zip(scores[0], indices[0]):
         if idx < 0:
             continue
-        item  = _catalog[idx]
-        boost = sum(
-            0.15 for w in query.lower().split()
-            if len(w) > 3 and w in item["name"].lower()
-        )
+        item = _catalog[idx]
+        # Normalize by how much of the item's own name is covered by the
+        # query, instead of a flat per-match bonus. A flat bonus rewards
+        # longer names for picking up more incidental word matches (e.g.
+        # "Microsoft Excel 365 - Essentials (New)" beating "MS Excel (New)"
+        # just for also containing "microsoft"). Coverage-based boosting
+        # favors names that are a tighter, more complete match to the query.
+        name_words = {w for w in item["name"].lower().split() if len(w) > 2}
+        overlap = query_words & name_words
+        boost = 0.3 * (len(overlap) / len(name_words)) if name_words else 0.0
         results.append((item, float(score) + boost))
 
     results.sort(key=lambda x: x[1], reverse=True)
