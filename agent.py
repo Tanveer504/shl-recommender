@@ -1,10 +1,10 @@
 import os, json, logging
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from retrieval import retrieve_assessments
 
 logger = logging.getLogger(__name__)
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-_gemini = genai.GenerativeModel("gemini-1.5-flash")
+_client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
 SYSTEM_PROMPT = """You are a conversational SHL assessment recommender for hiring managers.
 
@@ -59,14 +59,11 @@ def _build_prompt(messages: list[dict], candidates: list[dict]) -> str:
     )
 
 def get_agent_response(messages) -> dict:
-    # Build query from last 3 user turns
     user_msgs = [m.content for m in messages if m.role == "user"]
     query = " ".join(user_msgs[-3:])
 
-    # Primary retrieval
     candidates = retrieve_assessments(query, top_k=20)
 
-    # Secondary pass: catch any specifically named assessments
     seen_ids = {c["entity_id"] for c in candidates}
     for msg in messages[-4:]:
         if msg.role == "user":
@@ -82,9 +79,10 @@ def get_agent_response(messages) -> dict:
         candidates
     )
 
-    response = _gemini.generate_content(
-        prompt,
-        generation_config=genai.types.GenerationConfig(
+    response = _client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=prompt,
+        config=types.GenerateContentConfig(
             temperature=0.1,
             max_output_tokens=1000,
         )
@@ -95,10 +93,10 @@ def get_agent_response(messages) -> dict:
     try:
         result = json.loads(raw)
     except json.JSONDecodeError:
-        logger.warning(f"JSON parse failed, raw output: {raw[:300]}")
+        logger.warning(f"JSON parse failed: {raw[:300]}")
         return {
             "action": "clarify",
-            "reply": "Could you tell me more about the role you're hiring for and the seniority level?",
+            "reply": "Could you tell me more about the role and seniority level?",
             "selected": []
         }
 
