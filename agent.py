@@ -1,25 +1,26 @@
 """
 agent.py — SHL Assessment Recommender core logic
-LLM: gemini-1.5-flash  (free tier: 15 RPM, 1500 RPD)
-NOTE: gemini-2.0-flash has limit=0 on the free tier — do NOT use it.
+LLM: Groq — llama-3.3-70b-versatile
+NOTE: requires GROQ_API_KEY env var set on Render (Dashboard > Environment).
 """
 
 import os, json, time, logging
-import google.generativeai as genai
+from groq import Groq
 from retrieval import retrieve_assessments
 
 logger = logging.getLogger(__name__)
 
-# ── configure Gemini once at import time ──────────────────────────────────────
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+# ── configure Groq client once at import time ──────────────────────────────
+if "GROQ_API_KEY" not in os.environ:
+    raise RuntimeError(
+        "GROQ_API_KEY is not set. Add it in Render > your service > Environment."
+    )
 
-_MODEL = genai.GenerativeModel(
-    model_name="gemini-1.5-flash",          # free tier: 15 RPM, 1 500 RPD
-    generation_config=genai.types.GenerationConfig(
-        temperature=0.1,                     # low temp → consistent JSON
-        max_output_tokens=1200,
-    ),
-)
+_client = Groq(api_key=os.environ["GROQ_API_KEY"])
+
+_MODEL_NAME = "llama-3.3-70b-versatile"   # swap to "llama-3.1-8b-instant" for higher RPM if needed
+_TEMPERATURE = 0.1                          # low temp → consistent JSON
+_MAX_TOKENS = 1200
 
 # ── system prompt ─────────────────────────────────────────────────────────────
 SYSTEM_PROMPT = """You are an SHL assessment recommender agent. You help hiring managers and recruiters select the right SHL Individual Test Solution assessments.
@@ -72,8 +73,8 @@ def _build_catalog_block(candidates: list) -> str:
     return "\n".join(lines)
 
 
-def _build_prompt(messages: list, candidates: list) -> str:
-    """Assemble the full prompt sent to Gemini."""
+def _build_user_content(messages: list, candidates: list) -> str:
+    """Assemble the user-turn content sent to Groq (system prompt is sent separately)."""
     history_lines = []
     for m in messages:
         role = "User" if m.role == "user" else "Assistant"
@@ -83,31 +84,39 @@ def _build_prompt(messages: list, candidates: list) -> str:
     catalog_block = _build_catalog_block(candidates)
 
     return (
-        f"{SYSTEM_PROMPT}\n\n"
         f"CONVERSATION HISTORY:\n{history}\n\n"
         f"CATALOG CANDIDATES (only recommend from these):\n{catalog_block}\n\n"
         f"Respond with JSON only."
     )
 
 
-def _call_gemini(prompt: str, max_retries: int = 2) -> str:
+def _call_groq(user_content: str, max_retries: int = 2) -> str:
     """
-    Call Gemini with simple retry on 429.
-    Note: 429 retry-after is ~46 s which exceeds the 30 s evaluator timeout,
-    so we only retry once with a short wait to handle transient blips.
+    Call Groq with simple retry on 429.
+    Groq's free tier returns a retry-after header; we only retry once with a
+    short wait to handle transient blips within the evaluator's timeout.
     """
     last_err = None
     for attempt in range(max_retries):
         try:
-            response = _MODEL.generate_content(prompt)
-            return response.text.strip()
+            response = _client.chat.completions.create(
+                model=_MODEL_NAME,
+                temperature=_TEMPERATURE,
+                max_tokens=_MAX_TOKENS,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+            )
+            return response.choices[0].message.content.strip()
         except Exception as exc:
             last_err = exc
             msg = str(exc)
-            if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+            if "429" in msg or "rate_limit" in msg.lower():
                 if attempt < max_retries - 1:
                     wait = 5 * (attempt + 1)   # 5 s, 10 s — short waits only
-                    logger.warning(f"Gemini 429 — waiting {wait}s before retry {attempt+2}")
+                    logger.warning(f"Groq 429 — waiting {wait}s before retry {attempt+2}")
                     time.sleep(wait)
                     continue
             # Non-429 errors: re-raise immediately
@@ -142,8 +151,8 @@ def get_agent_response(messages: list, catalog: list) -> dict:
     candidates = candidates[:25]
 
     # Build and call
-    prompt = _build_prompt(messages, candidates)
-    raw = _call_gemini(prompt)
+    user_content = _build_user_content(messages, candidates)
+    raw = _call_groq(user_content)
 
     # Strip accidental markdown fences
     raw = raw.replace("```json", "").replace("```", "").strip()
