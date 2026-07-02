@@ -1,10 +1,9 @@
 import os, json, logging
-from google import genai
-from google.genai import types
+from groq import Groq
 from retrieval import retrieve_assessments
 
 logger = logging.getLogger(__name__)
-_client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+_client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
 SYSTEM_PROMPT = """You are a conversational SHL assessment recommender for hiring managers.
 
@@ -52,9 +51,8 @@ def _build_prompt(messages: list[dict], candidates: list[dict]) -> str:
         )
 
     return (
-        f"{SYSTEM_PROMPT}\n\n"
-        f"CONVERSATION HISTORY:\n{history}\n\n"
         f"CATALOG CANDIDATES (ONLY pick entity_ids from this list):\n{catalog_block}\n"
+        f"CONVERSATION HISTORY:\n{history}\n\n"
         f"Respond with JSON now."
     )
 
@@ -74,21 +72,23 @@ def get_agent_response(messages) -> dict:
 
     candidates = candidates[:25]
 
-    prompt = _build_prompt(
+    user_prompt = _build_prompt(
         [{"role": m.role, "content": m.content} for m in messages],
         candidates
     )
 
-    response = _client.models.generate_content(
-        model="gemini-1.5-flash-8b",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            temperature=0.1,
-            max_output_tokens=1000,
-        )
+    response = _client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user",   "content": user_prompt},
+        ],
+        temperature=0.1,
+        max_tokens=1000,
     )
 
-    raw = response.text.strip().replace("```json", "").replace("```", "").strip()
+    raw = response.choices[0].message.content.strip()
+    raw = raw.replace("```json", "").replace("```", "").strip()
 
     try:
         result = json.loads(raw)
