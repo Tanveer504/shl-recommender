@@ -34,7 +34,7 @@ def chat(request: ChatRequest):
             end_of_conversation=True
         )
     try:
-        result = get_agent_response(request.messages, CATALOG)
+        result = get_agent_response(request.messages)
     except Exception as e:
         logger.error(f"Agent error: {e}", exc_info=True)
         return ChatResponse(
