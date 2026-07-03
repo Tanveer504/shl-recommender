@@ -1,5 +1,5 @@
 import os, json, logging
-from groq import Groq
+from groq import Groq, RateLimitError
 from retrieval import retrieve_assessments, get_catalog
 
 logger = logging.getLogger(__name__)
@@ -74,7 +74,7 @@ def _build_prompt(messages: list[dict], candidates: list[dict]) -> str:
             f"ENTITY_ID={item['entity_id']} | NAME={item['name']}\n"
             f"  Type={item['test_type']} | Remote={item['remote']} | "
             f"Duration={item['duration'] or 'N/A'} | Levels={levels}\n"
-            f"  Desc={item['description'][:200]}\n"
+            f"  Desc={item['description'][:110]}\n"
             f"  URL={item['url']}\n\n"
         )
 
@@ -93,13 +93,13 @@ def get_agent_response(messages) -> dict:
     query = " ".join(user_msgs[-3:])
 
     # Primary retrieval
-    candidates = retrieve_assessments(query, top_k=25)
+    candidates = retrieve_assessments(query, top_k=16)
 
     # Secondary pass — catch named assessments from recent turns
     seen_ids = {c["entity_id"] for c in candidates}
-    for msg in messages[-4:]:
+    for msg in messages[-2:]:
         if msg.role == "user":
-            for item in retrieve_assessments(msg.content, top_k=10):
+            for item in retrieve_assessments(msg.content, top_k=6):
                 if item["entity_id"] not in seen_ids:
                     candidates.append(item)
                     seen_ids.add(item["entity_id"])
@@ -110,22 +110,33 @@ def get_agent_response(messages) -> dict:
             candidates.append(item)
             seen_ids.add(item["entity_id"])
 
-    candidates = candidates[:35]
+    candidates = candidates[:20]
 
     prompt = _build_prompt(
         [{"role": m.role, "content": m.content} for m in messages],
         candidates
     )
 
-    response = _client.chat.completions.create(
-        model="llama-3.3-70b-versatile",   # bigger model = better instruction following
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user",   "content": prompt},
-        ],
-        temperature=0.1,
-        max_tokens=1200,
-    )
+    def _call(model: str):
+        return _client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user",   "content": prompt},
+            ],
+            temperature=0.1,
+            max_tokens=1200,
+        )
+
+    try:
+        response = _call("llama-3.3-70b-versatile")
+    except RateLimitError as e:
+        # Primary model's quota (TPD or TPM) is exhausted. Fall back to a
+        # smaller Groq model on a separate quota pool rather than failing
+        # the whole turn — worse instruction-following, but still grounded
+        # in the same catalog candidates and JSON schema.
+        logger.warning(f"70B rate-limited, falling back to 8b-instant: {e}")
+        response = _call("llama-3.1-8b-instant")
 
     raw = response.choices[0].message.content.strip()
     raw = raw.replace("```json", "").replace("```", "").strip()
