@@ -15,8 +15,13 @@ from google.genai import types as _gtypes
 _gemini = _genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
 # ── Groq (fallback) ─────────────────────────────────────────────
-from groq import Groq, RateLimitError, APITimeoutError, APIConnectionError
-_groq = Groq(api_key=os.environ.get("GROQ_API_KEY",""), max_retries=0, timeout=20.0)
+_groq = None
+try:
+    from groq import Groq, RateLimitError, APITimeoutError, APIConnectionError
+    _groq = Groq(api_key=os.environ.get("GROQ_API_KEY",""), max_retries=0, timeout=20.0)
+    logger.info("Groq client initialized OK")
+except Exception as _groq_err:
+    logger.warning(f"Groq unavailable (using Gemini only): {_groq_err}")
 
 # ── System prompt ───────────────────────────────────────────────
 SYSTEM_PROMPT = """You are a conversational SHL assessment recommender for hiring managers.
@@ -175,20 +180,23 @@ def get_agent_response(messages) -> dict:
     )
 
     # Try Gemini first (high quota), fall back to Groq
+    # Try Gemini first (high quota), fall back to Groq if available
     raw = None
     try:
         raw = _call_gemini(prompt)
         logger.info("Gemini responded OK")
     except Exception as e:
-        logger.warning(f"Gemini failed: {e} — trying Groq")
-        try:
-            raw = _call_groq(prompt)
-            logger.info("Groq responded OK")
-        except Exception as e2:
-            logger.error(f"Both failed: {e2}")
+        logger.warning(f"Gemini failed: {e}")
+        if _groq is not None:
+            try:
+                raw = _call_groq(prompt)
+                logger.info("Groq responded OK")
+            except Exception as e2:
+                logger.error(f"Groq also failed: {e2}")
+        if raw is None:
             return {
                 "action": "clarify",
-                "reply": "Could you tell me more about the role and seniority level?",
+                "reply": "Could you clarify the role and seniority level?",
                 "selected": [],
             }
 
