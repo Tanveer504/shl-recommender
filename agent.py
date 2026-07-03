@@ -1,9 +1,13 @@
 import os, json, logging
-from groq import Groq, RateLimitError
+from groq import Groq, RateLimitError, APITimeoutError, APIConnectionError
 from retrieval import retrieve_assessments, get_catalog
 
 logger = logging.getLogger(__name__)
-_client = Groq(api_key=os.environ["GROQ_API_KEY"])
+# max_retries=0: the SDK's default retry-with-backoff on 429s sleeps
+# silently inside .create() (6s, 12s, ...) before raising — that alone can
+# eat the evaluator's 30s call budget before our own fallback even runs.
+# timeout keeps a single call from hanging indefinitely on top of that.
+_client = Groq(api_key=os.environ["GROQ_API_KEY"], max_retries=0, timeout=10.0)
 
 SYSTEM_PROMPT = """You are a conversational SHL assessment recommender for hiring managers.
 
@@ -130,12 +134,14 @@ def get_agent_response(messages) -> dict:
 
     try:
         response = _call("llama-3.3-70b-versatile")
-    except RateLimitError as e:
-        # Primary model's quota (TPD or TPM) is exhausted. Fall back to a
+    except (RateLimitError, APITimeoutError, APIConnectionError) as e:
+        # Primary model is throttled, slow, or unreachable. Fall back to a
         # smaller Groq model on a separate quota pool rather than failing
         # the whole turn — worse instruction-following, but still grounded
-        # in the same catalog candidates and JSON schema.
-        logger.warning(f"70B rate-limited, falling back to 8b-instant: {e}")
+        # in the same catalog candidates and JSON schema. max_retries=0 on
+        # the client means neither call silently burns the 30s call budget
+        # on hidden SDK-internal retry sleeps.
+        logger.warning(f"70B call failed ({type(e).__name__}), falling back to 8b-instant: {e}")
         response = _call("llama-3.1-8b-instant")
 
     raw = response.choices[0].message.content.strip()
