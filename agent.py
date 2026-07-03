@@ -1,6 +1,6 @@
 """
 agent.py — SHL Assessment Recommender
-PRIMARY  : Gemini 1.5 Flash  (15 RPM, 1M TPD — handles full evaluator load)
+PRIMARY  : Gemini 2.5 Flash (high free-tier quota — handles full evaluator load)
 FALLBACK : Groq llama-3.3-70b (if Gemini fails)
 """
 
@@ -117,7 +117,7 @@ def _build_prompt(messages: list[dict], candidates: list[dict]) -> str:
 
 def _call_gemini(prompt: str) -> str:
     resp = _gemini.models.generate_content(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         contents=prompt,
         config=_gtypes.GenerateContentConfig(
             system_instruction=SYSTEM_PROMPT,
