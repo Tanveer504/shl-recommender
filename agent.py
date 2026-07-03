@@ -122,7 +122,9 @@ def _call_gemini(prompt: str) -> str:
         config=_gtypes.GenerateContentConfig(
             system_instruction=SYSTEM_PROMPT,
             temperature=0.1,
-            max_output_tokens=900,
+            max_output_tokens=3000,          # was 900 — too low, caused truncated JSON
+            response_mime_type="application/json",  # forces valid JSON, no ```json fences
+            thinking_config=_gtypes.ThinkingConfig(thinking_budget=0),  # thinking tokens were eating the output budget
         )
     )
     return resp.text.strip()
